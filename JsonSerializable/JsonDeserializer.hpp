@@ -12,8 +12,8 @@
 #include <iostream>
 #include <jsoncpp/json/json.h>
 #include <type_traits>
-#include "TypeTraits.hpp"
-#include "FieldMacros.hpp"
+#include "JsonSerializable/TypeTraits.h"
+#include "JsonSerializable/FieldMacros.h"
 
 /**
  * JSON 反序列化功能
