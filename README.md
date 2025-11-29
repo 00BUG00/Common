@@ -1,85 +1,100 @@
 # Common
 
-公共组件集合（C++）：包含日志、JSON 序列化助手与生产者-消费者工具。
+# Common
 
-特点概览
-- 轻量日志系统（宏、LogData、回调机制）——实现位于 `Log/Log.hpp`。
-- JSON 序列化/反序列化宏与基类——实现位于 `JsonSerializable/`（依赖 `jsoncpp` 可选）。
-- 消费者实现：线程版与协程版——位于 `Pool/ThreadConsumer.hpp` 与 `Pool/CoroutineConsumer.hpp`。
+此仓库为一组 C++ 公共组件，文档与示例严格基于仓内现有源代码（以 `Log/Log.hpp`、`Pool/*.hpp`、`JsonSerializable/*.hpp` 为准）。
 
-目录结构
+主要功能
+- 轻量日志设施：日志宏、运行时 LogData、可注册写回调（`Log/Log.hpp`）。
+- JSON 序列化：基于 `jsoncpp` 的序列化/反序列化辅助宏与基类（`JsonSerializable/`）。
+- 消费者/派发：线程版与协程版消费者模板（`Pool/ThreadConsumer.hpp`、`Pool/CoroutineConsumer.hpp`）。
+
+代码目录
 ```
 Common/
-    Log/
-        Log.hpp              # 日志实现（宏、LogData、回调）
-        test_log.cpp         # 示例/测试
-    JsonSerializable/
-        FieldMacros.h
-        JsonDeserializer.hpp
-        JsonSerializer.hpp
-        JsonSerializable.hpp
-        TypeTraits.h
-    Pool/
-        ThreadConsumer.hpp   # 基于线程的消费者模板
-        CoroutineConsumer.hpp# 基于 C++20 协程的消费者模板
-    docs/
-        Log.md
-        Pool.md
-        JsonSerializable.md
-    README.md
+  Log/
+    Log.hpp
+    test_log.cpp
+  JsonSerializable/
+    FieldMacros.h
+    JsonDeserializer.hpp
+    JsonSerializer.hpp
+    JsonSerializable.hpp
+    TypeTraits.h
+  Pool/
+    ThreadConsumer.hpp
+    CoroutineConsumer.hpp
+  docs/
+    Log.md
+    Pool.md
+    JsonSerializable.md
+  README.md
 ```
 
-兼容性与依赖
-- 建议使用支持 C++17 的编译器；若要使用 `CoroutineConsumer`，需支持 C++20 协程。
-- JSON 支持为可选：若定义 `JSON_CPP` 并链接 `jsoncpp`，`Log` 与 `JsonSerializable` 中会启用 JSON 支持。
+兼容性说明
+- 默认目标：C++17。
+- 若使用 `CoroutineConsumer`，需启用 C++20 协程支持并使用支持协程的编译器。
+- 可选依赖：`jsoncpp`（若定义 `JSON_CPP`，部分 JSON 功能启用）。
 
-快速示例
+快速示例（基于实际源码）
 
-日志（基于 `Log/Log.hpp`）
+1) 基本日志使用
+
 ```cpp
 #include "Log/Log.hpp"
+#include <iostream>
 
 int main() {
+    // 直接使用日志宏
     LOGI() << "应用程序启动";
+
+    // 注册简单回调（线程安全需由回调实现者保证）
     Log::SetLogWriterFunc([](const LogData& d){
-        // 默认 ToString + 控制台
         std::cout << Log::ToString(d) << std::endl;
     });
+
     LOGW() << "警告示例";
+    return 0;
 }
 ```
 
-将日志交由线程消费者处理（示例）
+2) 将日志交由 `ThreadConsumer<LogData>` 异步处理
+
 ```cpp
 #include "Pool/ThreadConsumer.hpp"
 #include "Log/Log.hpp"
 
 int main() {
-    ThreadConsumer<LogData> c([](const LogData& d){
-        std::cout << Log::ToString(d) << std::endl;
-    }, 1);
-    c.Start();
-    Log::SetLogWriterFunc([&c](const LogData& d){ c.AddTask(d); });
+    ThreadConsumer<LogData> consumer(
+        [](const LogData& d){ std::cout << Log::ToString(d) << std::endl; },
+        1
+    );
+    consumer.Start();
+
+    // 把 Log 的写回调设置为向消费者推送任务
+    Log::SetLogWriterFunc([&consumer](const LogData& d){ consumer.AddTask(d); });
+
     LOGI() << "异步日志示例";
-    c.Stop();
+
+    consumer.Stop();
+    return 0;
 }
 ```
 
-JSON 可序列化对象（`JsonSerializable`）
+3) JSON 序列化（使用 `JsonSerializable` 宏）
+
 ```cpp
 #include "JsonSerializable/JsonSerializable.hpp"
 
-// 在类中使用 FIELD 宏和 JSON_SERIALIZE_* 宏以启用自动序列化
+// 在类中使用 FIELD 宏并应用 JSON_SERIALIZE_* 宏以生成序列化函数
 ```
 
-文档
-- `docs/Log.md`：基于 `Log/Log.hpp` 的使用说明与注意事项。
-- `docs/Pool.md`：基于 `Pool` 下两个消费者实现的说明与示例。
-- `docs/JsonSerializable.md`：描述 `JsonSerializable` 基类与宏的使用。
+文档与约定
+- 所有文档均以仓内源代码为准；若 README 或 docs 中仍出现不存在于代码的 API（例如 `LoggerManager`），请认为是遗留内容并以源码实现为准。
+- 详细模块文档位于 `docs/` 目录（`docs/Log.md`, `docs/Pool.md`, `docs/JsonSerializable.md`）。
 
-下一步
-- 如果你希望项目包含一个全局 `LoggerManager`（单例）以统一管理 Logger，我可以根据现有文档草案实现一个头文件/实现并把示例整合回来；或者我们保持当前简洁的基于 `Log::SetLogWriterFunc` 的集成方式。
-
+后续动作
+- 若你需要回归到“全局 `LoggerManager`”风格的 API，我可以实现一个兼容的 `LoggerManager` 头/实现并相应更新文档；否则文档将继续以当前代码为准。
 
 # Common - C++ 通用工具库
 
