@@ -1,59 +1,172 @@
+# Common
+
+公共组件集合（C++）：包含日志、JSON 序列化助手与生产者-消费者工具。
+
+特点概览
+- 轻量日志系统（宏、LogData、回调机制）——实现位于 `Log/Log.hpp`。
+- JSON 序列化/反序列化宏与基类——实现位于 `JsonSerializable/`（依赖 `jsoncpp` 可选）。
+- 消费者实现：线程版与协程版——位于 `Pool/ThreadConsumer.hpp` 与 `Pool/CoroutineConsumer.hpp`。
+
+目录结构
+```
+Common/
+    Log/
+        Log.hpp              # 日志实现（宏、LogData、回调）
+        test_log.cpp         # 示例/测试
+    JsonSerializable/
+        FieldMacros.h
+        JsonDeserializer.hpp
+        JsonSerializer.hpp
+        JsonSerializable.hpp
+        TypeTraits.h
+    Pool/
+        ThreadConsumer.hpp   # 基于线程的消费者模板
+        CoroutineConsumer.hpp# 基于 C++20 协程的消费者模板
+    docs/
+        Log.md
+        Pool.md
+        JsonSerializable.md
+    README.md
+```
+
+兼容性与依赖
+- 建议使用支持 C++17 的编译器；若要使用 `CoroutineConsumer`，需支持 C++20 协程。
+- JSON 支持为可选：若定义 `JSON_CPP` 并链接 `jsoncpp`，`Log` 与 `JsonSerializable` 中会启用 JSON 支持。
+
+快速示例
+
+日志（基于 `Log/Log.hpp`）
+```cpp
+#include "Log/Log.hpp"
+
+int main() {
+    LOGI() << "应用程序启动";
+    Log::SetLogWriterFunc([](const LogData& d){
+        // 默认 ToString + 控制台
+        std::cout << Log::ToString(d) << std::endl;
+    });
+    LOGW() << "警告示例";
+}
+```
+
+将日志交由线程消费者处理（示例）
+```cpp
+#include "Pool/ThreadConsumer.hpp"
+#include "Log/Log.hpp"
+
+int main() {
+    ThreadConsumer<LogData> c([](const LogData& d){
+        std::cout << Log::ToString(d) << std::endl;
+    }, 1);
+    c.Start();
+    Log::SetLogWriterFunc([&c](const LogData& d){ c.AddTask(d); });
+    LOGI() << "异步日志示例";
+    c.Stop();
+}
+```
+
+JSON 可序列化对象（`JsonSerializable`）
+```cpp
+#include "JsonSerializable/JsonSerializable.hpp"
+
+// 在类中使用 FIELD 宏和 JSON_SERIALIZE_* 宏以启用自动序列化
+```
+
+文档
+- `docs/Log.md`：基于 `Log/Log.hpp` 的使用说明与注意事项。
+- `docs/Pool.md`：基于 `Pool` 下两个消费者实现的说明与示例。
+- `docs/JsonSerializable.md`：描述 `JsonSerializable` 基类与宏的使用。
+
+下一步
+- 如果你希望项目包含一个全局 `LoggerManager`（单例）以统一管理 Logger，我可以根据现有文档草案实现一个头文件/实现并把示例整合回来；或者我们保持当前简洁的基于 `Log::SetLogWriterFunc` 的集成方式。
+
+
 # Common - C++ 通用工具库
 
-一个功能丰富的C++通用工具库，提供JSON序列化、日志记录、线程池等常用功能模块。
+一个功能丰富的C++通用工具库，提供 JSON 序列化、日志记录、线程/协程派发等常用功能模块。该库采用现代 C++ 设计，强调线程安全、易用性与高效性。
 
 ## 📋 目录
 
 - [功能特性](#功能特性)
 - [模块介绍](#模块介绍)
 - [快速开始](#快速开始)
+- [核心架构](#核心架构)
 - [详细文档](#详细文档)
 - [依赖项](#依赖项)
 - [编译说明](#编译说明)
 - [使用示例](#使用示例)
-- [贡献指南](#贡献指南)
-- [许可证](#许可证)
 
 ## 🚀 功能特性
 
-- **JSON序列化/反序列化**: 支持对象与JSON之间的双向转换，支持复杂数据类型
-- **日志系统**: 多级别日志记录，支持同步/异步输出，线程安全
-- **对象池**: 高效的对象池实现，支持资源复用
-- **异步池**: 基于协程的异步对象池
-- **类型安全**: 使用现代C++特性，提供类型安全的API
-- **跨平台**: 支持Windows、Linux、macOS等主流平台
+- **JSON 序列化/反序列化**: 支持对象与 JSON 之间的双向转换，支持复杂数据类型和继承关系
+- **日志系统**: 多级别日志（INFO、WARN、ERROR、DEBUG）、自动时间戳与位置信息、容器友好输出
+- **灵活的日志派发**: 
+  - **全局线程消费** (`GLOBAL_THREAD`): 单一线程消费所有日志
+  - **本地线程消费** (`LOCAL_THREAD`): 每个 Logger 独立维护消费线程
+  - **全局协程调度** (`GLOBAL_CORO`, C++20+): 协程驱动的日志派发
+  - **本地协程派发** (`LOCAL_CORO`, C++20+): 每个 Logger 独立协程派发
+- **线程池 / 消费者**: 支持多线程任务队列、线程安全的数据派发
+- **类型安全**: 使用现代 C++ 特性（模板、SFINAE、C++20 协程）
+- **跨平台**: 支持 Windows、Linux、macOS 等主流平台
 
 ## 📦 模块介绍
 
 ### 1. JsonSerializable 模块
-提供完整的JSON序列化和反序列化功能，支持：
-- 基础数据类型序列化
-- 容器类型（vector、map、set等）序列化
-- 嵌套对象序列化
-- 继承关系处理
-- 可选字段支持
+提供完整的 JSON 序列化和反序列化功能，支持：
+- 基础数据类型序列化（int、string、double 等）
+- STL 容器类型（vector、map、set、list 等）
+- 嵌套对象和继承关系处理
+- std::optional 可选字段支持
+- 便捷的宏定义（`FIELD`、`JSON_SERIALIZE_FULL`、`JSON_SERIALIZE_COMPLETE` 等）
 
 ### 2. Log 模块
 功能强大的日志系统，特性包括：
-- 多级别日志（INFO、WARN、ERROR、DEBUG）
-- 自动时间戳和位置信息
-- 支持自定义日志输出函数
-- 可选的异步日志线程
-- 容器类型友好输出
+- 多级别日志（INFO、WARN、ERROR、DEBUG）与对应宏（`LOGI()`、`LOGW()`、`LOGE()`、`LOGD()`）
+- 自动时间戳和文件/行号/函数名信息
+- 支持自定义日志输出回调函数
+- 容器类型友好输出（自动格式化 vector、map 等）
+- **全局 LoggerManager** 单例：
+  - 统一管理多个模块的 Logger 实例
+  - 按模块名称创建/获取 Logger
+  - 统一设置派发模式和回调
+  - 支持 GLOBAL_THREAD / LOCAL_THREAD / 协程派发等模式
 
 ### 3. Pool 模块
-提供多种对象池实现：
-- **ObjectPool**: 传统对象池，支持对象生命周期管理
-- **AsyncPool**: 基于C++20协程的异步对象池
+提供多种对象管理和数据派发实现：
+- **ThreadConsumer**: 通用的多线程消费者模板，支持任意数据类型
+- **CoroutineConsumer**: 基于 C++20 协程的消费者（待实现）
+- **ObjectPool**: 传统对象池（可选）
+- **AsyncPool**: 基于协程的异步池（可选）
 
 ## 🏃‍♂️ 快速开始
 
-### 基本使用
+### 1. 基本日志使用
+
+```cpp
+#include "Log/LoggerManager.h"
+
+int main() {
+    // 获取全局 LoggerManager
+    auto& mgr = LoggerManager::GetLoggerManager();
+    
+    // 获取或创建默认 Logger
+    auto* logger = mgr.GetLogger();
+    
+    // 使用日志宏
+    LOGI() << "应用程序启动";
+    LOGW() << "这是一个警告";
+    LOGE() << "发生错误: " << "某种错误";
+    LOGD() << "调试信息: 变量值 = " << 42;
+    
+    return 0;
+}
+```
+
+### 2. JSON 序列化
 
 ```cpp
 #include "JsonSerializable/JsonSerializable.hpp"
-#include "Log/Log.hpp"
-#include "Pool/ObjectPool.hpp"  // 对象池
+#include "Log/LoggerManager.h"
 
 // 定义可序列化的类
 class User : public JsonSerializable {
@@ -71,8 +184,8 @@ class User : public JsonSerializable {
 };
 
 int main() {
-    // 使用日志
-    LOGI() << "应用程序启动";
+    auto& mgr = LoggerManager::GetLoggerManager();
+    auto* logger = mgr.GetLogger("User");
     
     // 创建用户对象
     User user;
@@ -82,274 +195,247 @@ int main() {
     
     // 序列化为JSON
     std::string json_str = user.to_json_string();
-    LOGI() << "用户JSON:" << json_str;
+    LOGI() << "用户JSON: " << json_str;
     
     return 0;
 }
 ```
 
+### 3. 线程派发与日志消费
+
+```cpp
+#include "Log/LoggerManager.h"
+
+int main() {
+    auto& mgr = LoggerManager::GetLoggerManager();
+    
+    // 创建自定义日志回调
+    auto log_callback = [](const LogData& log) {
+        std::cout << Log::ToString(log) << std::endl;
+        // 或写入文件、发送到远程等
+    };
+    
+    // 为所有 Logger 设置回调
+    mgr.SetWriteCallback(log_callback);
+    
+    // 启动日志派发器（全局线程模式）
+    mgr.Start(LOG_DISPATCH_MODE::GLOBAL_THREAD);
+    
+    // ... 你的应用代码 ...
+    LOGI() << "执行中的日志";
+    
+    // 程序退出前停止派发器
+    mgr.Stop();
+    
+    return 0;
+}
+```
+
+## 🏗️ 核心架构
+
+### LoggerManager - 全局单例管理器
+
+**LoggerManager** 是日志系统的中枢，负责：
+- 创建和维护多个模块的 `Logger` 实例
+- 统一管理日志派发模式（全局线程 / 本地线程 / 协程等）
+- 为所有 Logger 设置统一的写入回调
+- 生命周期管理：析构时停止并释放所有 Logger
+
+**关键方法**：
+- `GetLoggerManager()`: 获取全局单例
+- `GetLogger(name)`: 获取或创建指定模块的 Logger（懒创建）
+- `InsertLogger(name)`: 主动创建新的 Logger
+- `SetWriteCallback(callback, name)`: 设置日志写入回调
+- `Start(mode)`: 启动日志派发（支持 GLOBAL_THREAD 等模式）
+- `Stop()`: 停止派发并清理资源
+
+### Logger - 模块级日志实例
+
+每个 Logger 负责一个模块的日志记录，支持：
+- 接收 `LogData` 日志数据
+- 按 `LOG_DISPATCH_MODE` 选择派发方式
+- 调用配置的写入回调
+
+### 日志派发模式 (LOG_DISPATCH_MODE)
+
+| 模式 | 说明 |
+|------|------|
+| `GLOBAL_THREAD` | 所有日志进入全局队列，由单一线程消费 |
+| `LOCAL_THREAD` | 每个 Logger 维护独立队列和消费线程 |
+| `GLOBAL_CORO` (C++20+) | 全局队列由协程调度器消费 |
+| `LOCAL_CORO` (C++20+) | 每个 Logger 使用独立协程派发 |
+
 ## 📚 详细文档
 
-### [JSON序列化模块文档](docs/JsonSerializable.md)
-- 基础用法和高级特性
-- 继承关系处理
-- 自定义类型支持
+### [JSON 序列化模块文档](docs/JsonSerializable.md)
+- 完整 API 与宏定义说明
+- 基础用法、继承关系处理
+- 嵌套对象、容器类型支持
 - 性能优化建议
 
-### [日志模块文档](docs/Log.md)
-- 日志级别和配置
-- 异步日志使用
-- 自定义输出格式
-- 性能考虑
+### [日志系统文档](docs/Log.md)
+- LoggerManager 单例设计与用法
+- 日志级别和格式配置
+- 日志派发方式详解 (GLOBAL_THREAD / LOCAL_THREAD / 协程模式)
+- 自定义回调与日志输出
+- 线程安全保证和使用建议
 
-### [对象池模块文档](docs/Pool.md)
-- 对象池配置和使用
-- 异步池和协程
-- 对象生命周期管理
-- 最佳实践
+### [线程消费与对象池文档](docs/Pool.md)
+- ThreadConsumer 多线程派发器用法
+- CoroutineConsumer 协程派发（C++20+）
+- 对象池与资源管理
 
-## 🔧 依赖项
+## 📋 依赖项
 
-### 必需依赖
 - **C++17** 或更高版本
-- **jsoncpp** - JSON处理库
+- **jsoncpp** 库（可选，仅在启用 JSON 支持时）
+- **C++20 编译器**（可选，用于协程特性 `GLOBAL_CORO`、`LOCAL_CORO`）
 
-### 可选依赖
-- **C++20** - 用于协程支持（AsyncPool模块）
+## 🔨 编译说明
 
-### 安装依赖
-
-#### Ubuntu/Debian
-```bash
-sudo apt-get install libjsoncpp-dev
-```
-
-#### CentOS/RHEL
-```bash
-sudo yum install jsoncpp-devel
-```
-
-#### macOS
-```bash
-brew install jsoncpp
-```
-
-#### Windows (vcpkg)
-```bash
-vcpkg install jsoncpp
-```
-
-## 🛠️ 编译说明
-
-### CMake 配置
-
-```cmake
-cmake_minimum_required(VERSION 3.16)
-project(Common)
-
-set(CMAKE_CXX_STANDARD 17)
-
-# 查找依赖
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(JSONCPP REQUIRED jsoncpp)
-
-# 包含头文件
-include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-include_directories(${JSONCPP_INCLUDE_DIRS})
-
-# 添加编译选项
-add_compile_options(${JSONCPP_CFLAGS_OTHER})
-
-# 定义宏（可选）
-add_definitions(-DJSON_CPP)  # 启用JSON支持
-add_definitions(-DLOG_THREAD)  # 启用异步日志
-```
-
-### 编译命令
+### CMake 构建（推荐）
 
 ```bash
 mkdir build
 cd build
-cmake ..
+cmake -DCMAKE_CXX_STANDARD=17 ..
 make
 ```
 
-## 💡 使用示例
+### 启用 C++20 协程
 
-### JSON序列化示例
-
-```cpp
-#include "JsonSerializable/JsonSerializable.hpp"
-
-// 基础类
-class Person : public JsonSerializable {
-    FIELD(std::string, name)
-    FIELD(int, age)
-    FIELD(std::vector<std::string>, hobbies)
-    
-    JSON_SERIALIZE_FULL(JsonSerializable,
-        FIELD_PAIR(name),
-        FIELD_PAIR(age),
-        FIELD_PAIR(hobbies)
-    )
-    
-    JSON_SERIALIZE_COMPLETE(Person)
-};
-
-// 继承类
-class Employee : public Person {
-    FIELD(std::string, department)
-    FIELD(double, salary)
-    
-    JSON_SERIALIZE_FULL_INHERIT(Person,
-        FIELD_PAIR(department),
-        FIELD_PAIR(salary)
-    )
-    
-    JSON_SERIALIZE_COMPLETE(Employee)
-};
-
-// 使用示例
-int main() {
-    Employee emp;
-    emp.set_name("李四");
-    emp.set_age(30);
-    emp.set_hobbies({"编程", "阅读", "运动"});
-    emp.set_department("技术部");
-    emp.set_salary(15000.0);
-    
-    // 序列化
-    std::string json = emp.to_json_string();
-    std::cout << json << std::endl;
-    
-    // 反序列化
-    Json::Value root;
-    Json::Reader reader;
-    if (reader.parse(json, root)) {
-        auto emp2 = Employee::from_json(root);
-        if (emp2) {
-            std::cout << "姓名: " << emp2->get_name() << std::endl;
-        }
-    }
-    
-    return 0;
-}
+```bash
+cmake -DCMAKE_CXX_STANDARD=20 ..
+make
 ```
 
-### 日志使用示例
+### 编译选项
+
+| 选项 | 说明 | 默认值 |
+|------|------|-------|
+| `CMAKE_CXX_STANDARD` | C++ 标准版本 (17/20) | 17 |
+| `ENABLE_TESTS` | 编译单元测试 | OFF |
+| `ENABLE_EXAMPLES` | 编译示例代码 | OFF |
+
+## 📝 使用示例
+
+### 示例 1: 日志系统与 LoggerManager
 
 ```cpp
-#include "Log/Log.hpp"
+#include "Log/LoggerManager.h"
+#include <iostream>
+#include <fstream>
 
 int main() {
-    // 设置自定义日志输出函数
-    Log::SetLogWriterFunc([](const std::string& msg) {
-        // 写入文件或发送到远程服务器
+    auto& mgr = LoggerManager::GetLoggerManager();
+    
+    // 创建两个模块的 Logger
+    mgr.InsertLogger("Network");
+    mgr.InsertLogger("Database");
+    
+    // 设置写入回调（同时输出到控制台和文件）
+    mgr.SetWriteCallback([](const LogData& log) {
+        std::string msg = Log::ToString(log);
+        std::cout << msg << std::endl;
+        
         std::ofstream file("app.log", std::ios::app);
         file << msg << std::endl;
     });
     
-    // 启用异步日志
-    Log::StartLogThread();
+    // 启动全局线程派发器
+    mgr.Start(LOG_DISPATCH_MODE::GLOBAL_THREAD);
     
-    // 使用不同级别的日志
-    LOGI() << "应用程序启动";
-    LOGW() << "这是一个警告消息";
-    LOGE() << "发生错误:" << "连接超时";
-    LOGD() << "调试信息:" << "变量值 = " << 42;
+    // 获取不同模块的 Logger
+    auto* net_logger = mgr.GetLogger("Network");
+    auto* db_logger = mgr.GetLogger("Database");
     
-    // 记录容器数据
-    std::vector<int> numbers = {1, 2, 3, 4, 5};
-    LOGI() << "数字列表:" << numbers;
+    // 记录日志（自动派发到消费线程）
+    LOGI() << "网络模块启动";
+    LOGW() << "数据库连接缓慢";
+    LOGE() << "连接失败";
     
-    // 停止异步日志
-    Log::StopLogThread();
+    // 停止派发器
+    mgr.Stop();
     
     return 0;
 }
 ```
 
-### 对象池使用示例
+### 示例 2: JSON 序列化与反序列化
 
 ```cpp
-#include "Pool/ObjectPool.hpp"
-#include <iostream>
+#include "JsonSerializable/JsonSerializable.hpp"
+#include "Log/LoggerManager.h"
 
-// 自定义连接类
-class DatabaseConnection {
-public:
-    DatabaseConnection() {
-        std::cout << "创建数据库连接" << std::endl;
-    }
+class User : public JsonSerializable {
+    FIELD(int, id)
+    FIELD(std::string, name)
+    FIELD(std::string, email)
+    FIELD(std::vector<std::string>, tags)
     
-    ~DatabaseConnection() {
-        std::cout << "销毁数据库连接" << std::endl;
-    }
+    JSON_SERIALIZE_FULL(JsonSerializable,
+        FIELD_PAIR(id),
+        FIELD_PAIR(name),
+        FIELD_PAIR(email),
+        FIELD_PAIR(tags)
+    )
     
-    void execute(const std::string& query) {
-        std::cout << "执行查询: " << query << std::endl;
-    }
-};
-
-// 连接池实现
-class ConnectionPool : public ObjectPool<DatabaseConnection*> {
-public:
-    ConnectionPool() : ObjectPool<DatabaseConnection*>(10, 3) {}
-    
-    DatabaseConnection* Create() noexcept override {
-        return new DatabaseConnection();
-    }
-    
-    bool Effective(DatabaseConnection* conn) noexcept override {
-        return conn != nullptr;
-    }
-    
-    void Destroy(DatabaseConnection* conn) noexcept override {
-        delete conn;
-    }
+    JSON_SERIALIZE_COMPLETE(User)
 };
 
 int main() {
-    ConnectionPool pool;
+    User user;
+    user.set_id(1);
+    user.set_name("张三");
+    user.set_email("zhangsan@example.com");
+    user.set_tags({"C++", "开发"});
     
-    // 获取连接
-    auto conn = pool.Get();
-    conn->execute("SELECT * FROM users");
+    // 序列化为 JSON 字符串
+    std::string json_str = user.to_json_string();
+    LOGI() << "用户 JSON: " << json_str;
     
-    // 归还连接
-    pool.Release(conn);
+    // 从 JSON 反序列化
+    auto user_opt = User::from_json_string(json_str);
+    if (user_opt) {
+        LOGI() << "恢复用户: " << user_opt->get_name();
+    }
     
     return 0;
 }
 ```
 
-## 🤝 贡献指南
+### 示例 3: ThreadConsumer 多线程派发
 
-我们欢迎社区贡献！请遵循以下步骤：
+```cpp
+#include "Pool/ThreadConsumer.hpp"
+#include <iostream>
+#include <chrono>
 
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
+struct Task {
+    int id;
+    std::string message;
+};
 
-### 代码规范
-- 使用4个空格缩进
-- 遵循现有的命名约定
-- 添加适当的注释（中文）
-- 确保代码通过所有测试
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
-
-## 📞 联系方式
-
-如有问题或建议，请通过以下方式联系：
-
-- 提交 [Issue](https://github.com/your-username/Common/issues)
-- 发送邮件至: your-email@example.com
-
----
-
-**注意**: 本项目正在积极开发中，API可能会发生变化。建议在生产环境使用前进行充分测试。
+int main() {
+    // 创建消费者：处理任务的回调函数，启动 4 个消费线程
+    ThreadConsumer<Task> consumer(
+        [](const Task& task) {
+            std::cout << "处理任务 #" << task.id << ": " << task.message << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        },
+        4  // 4 个线程
+    );
+    
+    consumer.Start();
+    
+    // 添加任务
+    for (int i = 0; i < 10; ++i) {
+        consumer.AddTask({i, "Task " + std::to_string(i)});
+    }
+    
+    // 停止消费者（等待当前任务完成）
+    consumer.Stop();
+    
+    return 0;
+}
+```
