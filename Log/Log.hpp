@@ -12,6 +12,11 @@
 #include <functional>
 #include <thread>
 #include <condition_variable>
+#include <type_traits>
+#include <iterator>
+#include <unordered_map>
+#include <string_view>
+#include <utility>
 
 #ifdef JSON_CPP
 #include <jsoncpp/json/json.h>
@@ -25,64 +30,155 @@ enum class LOG_TYPE {
     DEBUG,
 };
 
+typedef struct{
+    LOG_TYPE type;
+    std::string file;
+    int line;
+    std::string function;
+    std::tm local_time;
+    std::string content;
+}LogData;
+
 // 宏定义
+
 #ifndef LOGI
-#define LOGI() Log(LOG_TYPE::INFO, __FILE__, __FUNCTION__, __LINE__)
+    #define LOGI() Log(LOG_TYPE::INFO, __FILE__, __func__, __LINE__)
 #endif
+
 #ifndef LOGE
-#define LOGE() Log(LOG_TYPE::ERROR, __FILE__, __FUNCTION__, __LINE__)
+    #define LOGE() Log(LOG_TYPE::ERROR, __FILE__, __func__, __LINE__)
 #endif
+
 #ifndef LOGW
-#define LOGW() Log(LOG_TYPE::WARN, __FILE__, __FUNCTION__, __LINE__)
+    #define LOGW() Log(LOG_TYPE::WARN, __FILE__, __func__, __LINE__)
 #endif
+
 #ifndef LOGD
-#define LOGD() Log(LOG_TYPE::DEBUG, __FILE__, __FUNCTION__, __LINE__)
+    #define LOGD() Log(LOG_TYPE::DEBUG, __FILE__, __func__, __LINE__)
 #endif
+
+// 是否可迭代（有 begin/end 的类型）
+template <typename T>
+class is_iterable {
+private:
+    template <typename U>
+    static auto test(int) -> decltype(
+        std::begin(std::declval<U>()),
+        std::end(std::declval<U>()),
+        std::true_type()
+    );
+
+    template <typename>
+    static std::false_type test(...);
+public:
+    static constexpr bool value = decltype(test<T>(0))::value;
+};
+
+// 判断是否为 key-value 容器（value_type 有 first & second）
+template<typename T>
+struct is_kv_container {
+private:
+    template<typename U>
+    static auto test(int) 
+        -> decltype(
+            std::declval<typename U::value_type>().first,
+            std::declval<typename U::value_type>().second,
+            std::true_type{}
+        );
+
+    template<typename>
+    static std::false_type test(...);
+
+public:
+    static constexpr bool value = decltype(test<T>(0))::value;
+};
+
+// 判断是否为 string-like（可以转换为 string_view）
+// 这样可以屏蔽 std::string / std::string_view / const char* 等
+template <typename T>
+constexpr bool is_string_like_v = std::is_convertible_v<T, std::string_view>;
+
+
+// ------------------ Log class ------------------
 
 class Log {
 public:
-    Log(LOG_TYPE type, const std::string& file, const char* function, int line) {
+    Log(LOG_TYPE type, const std::string& file, const char* function, int line){
+        // 获取当前时间
         auto now = std::chrono::system_clock::now();
+        // 转换为时间戳
         auto now_c = std::chrono::system_clock::to_time_t(now);
-        std::tm tm;
-#if defined(_WIN32) || defined(_WIN64)
-        localtime_s(&tm, &now_c);
-#else
-        localtime_r(&now_c, &tm);
-#endif
-        _content << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-        switch(type){
-            case LOG_TYPE::INFO:  _content << " INFO "; break;
-            case LOG_TYPE::WARN:  _content << " WARN "; break;
-            case LOG_TYPE::ERROR: _content << " ERROR "; break;
-            case LOG_TYPE::DEBUG: _content << " DEBUG "; break;
-        }
-        _content << file.substr(file.find_last_of('/') + 1) << "[" << line << "][" << function << "] ";
+        // 转换为本地时间
+        std::tm* local_time = std::localtime(&now_c);
+        _local_time = *local_time;
+        _type = type;
+        _file = file;
+        _line = line;
+        _log_function = function;
     }
 
+    static std::string ToString(LogData LogData) {
+        std::ostringstream content;
+        content << std::put_time(&LogData.local_time, "%Y-%m-%d %H:%M:%S");
+        content << " ";
+        switch(LogData.type){
+            case LOG_TYPE::INFO:  content << " I "; break;
+            case LOG_TYPE::WARN:  content << " W "; break;
+            case LOG_TYPE::ERROR: content << " E "; break;
+            case LOG_TYPE::DEBUG: content << " D "; break;
+        }
+        content << LogData.file;
+        content << "[" << LogData.line << "][" << LogData.function << "] ";
+        return content.str() + LogData.content;
+    }
+    
+    // 普通单值输出（保留）
     template <typename T>
-    Log& operator<<(const T& data){
+    std::enable_if_t<
+        !is_iterable<T>::value || 
+        std::is_same_v<T, std::string> ||
+        std::is_same_v<T, std::string_view>,
+    Log&>
+    operator<<(const T& data){
         _content << data << " ";
         return *this;
     }
 
+    // ------------------
+    // 通用可迭代容器重载（排除 string-like 与 KV 容器）
+    // ------------------
     template <typename T>
-    Log& operator<<(const std::vector<T>& container){
-        for (size_t i = 0; i < container.size(); ++i) {
-            if (i != 0) _content << ",";
-            _content << container[i];
+    std::enable_if_t<
+        is_iterable<T>::value &&
+        !is_string_like_v<T> &&
+        !is_kv_container<T>::value,
+    Log&>
+    operator<<(const T& container)
+    {
+        _content << "{";
+        bool first = true;
+        for (const auto& item : container) {
+            if (!first) _content << ", ";
+                _content << item;
+            first = false;
         }
-        _content << " ";
+        _content << "} ";
         return *this;
     }
 
-    template <typename K, typename V>
-    Log& operator<<(const std::map<K,V>& container){
+    // ------------------
+    // 通用 KV 容器重载（map / unordered_map / multimap / custom KV）
+    // ------------------
+    template<typename T>
+    std::enable_if_t<is_kv_container<T>::value, Log&>
+    operator<<(const T& container)
+    {
         _content << "MAP:{";
-        size_t i = 0;
+        bool first = true;
         for (const auto& item : container) {
+            if (!first) _content << ", ";
             _content << "[" << item.first << "," << item.second << "]";
-            if (++i != container.size()) _content << ", ";
+            first = false;
         }
         _content << "} ";
         return *this;
@@ -102,90 +198,35 @@ public:
     }
 #endif
 
-#ifdef LOG_THREAD
     ~Log() {
-        AddLog(_content.str());
-    }
-
-    // 异步日志线程
-    static void LogThread() {
-        while (true) {
-            std::list<std::string> logs_to_write;
-
-            // 获取锁并等待
-            {
-                std::unique_lock<std::mutex> lock(_mutex);
-                _condition_variable.wait(lock, []{
-                    return !_content_list.empty() || !_thread_run_flag;
-                });
-
-                // 退出条件
-                if (!_thread_run_flag && _content_list.empty())
-                    break;
-
-                logs_to_write.swap(_content_list);
-            } // 锁释放
-
-            // 写日志（不持锁）
-            for (auto& log_str : logs_to_write) {
-                if (_log_writer_func)
-                    _log_writer_func(log_str);
-                else
-                    std::cout << log_str << std::endl;
-            }
-        }
-    }
-
-    static void StartLogThread() {
-        std::lock_guard<std::mutex> lock(_mutex);
-        if (!_thread.joinable()) {
-            _thread_run_flag = true;
-            _thread = std::thread(LogThread);
-        }
-    }
-
-    static void StopLogThread() {
-        {
-            std::lock_guard<std::mutex> lock(_mutex);
-            _thread_run_flag = false;
-        }
-        _condition_variable.notify_all();
-        if (_thread.joinable())
-            _thread.join();
-    }
-
-    static void AddLog(const std::string& content) {
-        {
-            std::lock_guard<std::mutex> lock(_mutex);
-            _content_list.push_back(content);
-        }
-        _condition_variable.notify_one();
-    }
-
-#else
-    ~Log() {
-        std::lock_guard<std::mutex> lock(_mutex);
         if (_log_writer_func)
-            _log_writer_func(_content.str());
+            _log_writer_func(ToLogInfo());
         else
-            std::cout << _content.str() << std::endl;
+            std::cout << ToString(ToLogInfo()) << std::endl;
     }
-#endif
 
-    static inline void SetLogWriterFunc(std::function<void(const std::string&)> func){
+
+    static inline void SetLogWriterFunc(std::function<void(LogData)> func){
         _log_writer_func = func;
     }
 
+    LogData ToLogInfo() {
+        LogData LogData;
+        LogData.type = _type;
+        LogData.file = _file;
+        LogData.line = _line;
+        LogData.function = _log_function;
+        LogData.local_time = _local_time;
+        LogData.content = _content.str();
+        return LogData;
+    }
+
 private:
+    LOG_TYPE _type;
+    std::string _file;
+    int _line;
+    std::string _log_function;
+    std::tm _local_time;
     std::ostringstream _content;
-
-    static inline std::mutex _mutex;
-    static inline std::function<void(const std::string&)> _log_writer_func = nullptr;
-
-#ifdef LOG_THREAD
-    static inline std::list<std::string> _content_list;
-    static inline std::thread _thread;
-    static inline bool _thread_run_flag = false;
-    static inline std::condition_variable _condition_variable;
-#endif
+    static inline std::function<void(const LogData)> _log_writer_func = nullptr;
 };
