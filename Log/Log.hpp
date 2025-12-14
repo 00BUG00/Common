@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <string_view>
 #include <utility>
+#include <cstring>
 
 #ifdef JSON_CPP
 #include <jsoncpp/json/json.h>
@@ -30,13 +31,30 @@ enum class LOG_TYPE {
     DEBUG,
 };
 
-typedef struct{
-    LOG_TYPE type;
-    std::string file;
-    int line;
-    std::string function;
-    std::tm local_time;
-    std::string content;
+typedef struct _LogData{
+    _LogData(LOG_TYPE type, const std::string& file, const char* function, int line)
+    {
+        _type=type;
+        _file=file;
+        _line=line;
+        _function=function;
+        _local_time=std::make_shared<std::tm>();
+    }
+    _LogData(const _LogData& other)
+    {
+        _type=other._type;
+        _file=other._file;
+        _line=other._line;
+        _function=other._function;
+        _local_time = other._local_time;
+        _content = other._content;
+    }
+    LOG_TYPE _type;
+    std::string _file;
+    int _line;
+    std::string _function;
+    std::shared_ptr<std::tm> _local_time;
+    std::string _content;
 }LogData;
 
 // 宏定义
@@ -103,44 +121,56 @@ constexpr bool is_string_like_v = std::is_convertible_v<T, std::string_view>;
 
 class Log {
 public:
-    Log(LOG_TYPE type, const std::string& file, const char* function, int line){
+    Log(LOG_TYPE type, const std::string& file, const char* function, int line)
+    :_logger_data(type,file,function,line){
         // 获取当前时间
         auto now = std::chrono::system_clock::now();
         // 转换为时间戳
         auto now_c = std::chrono::system_clock::to_time_t(now);
         // 转换为本地时间
         std::tm* local_time = std::localtime(&now_c);
-        _local_time = *local_time;
-        _type = type;
-        _file = file;
-        _line = line;
-        _log_function = function;
+        std::memcpy(_logger_data._local_time.get(),local_time,sizeof(std::tm));
     }
 
-    static std::string ToString(LogData LogData) {
+    static std::string ToString(const LogData& LogData) {
         std::ostringstream content;
-        content << std::put_time(&LogData.local_time, "%Y-%m-%d %H:%M:%S");
+        content << std::put_time(LogData._local_time.get(), "%Y-%m-%d %H:%M:%S");
         content << " ";
-        switch(LogData.type){
+        switch(LogData._type){
             case LOG_TYPE::INFO:  content << " I "; break;
             case LOG_TYPE::WARN:  content << " W "; break;
             case LOG_TYPE::ERROR: content << " E "; break;
             case LOG_TYPE::DEBUG: content << " D "; break;
         }
-        content << LogData.file;
-        content << "[" << LogData.line << "][" << LogData.function << "] ";
-        return content.str() + LogData.content;
+        content << LogData._file;
+        content << "[" << LogData._line << "][" << LogData._function << "] ";
+        return content.str() + LogData._content;
     }
     
     // 普通单值输出（保留）
     template <typename T>
     std::enable_if_t<
-        !is_iterable<T>::value || 
-        std::is_same_v<T, std::string> ||
-        std::is_same_v<T, std::string_view>,
+        !is_iterable<std::decay_t<T>>::value &&(
+            std::is_same_v<std::decay_t<T>,std::string> ||
+            std::is_same_v<std::decay_t<T>, std::string_view>||
+            std::is_same_v<std::decay_t<T>,char*>
+        ) ,
     Log&>
     operator<<(const T& data){
-        _content << data << " ";
+        _logger_data._content+=data;
+        _logger_data._content+=" ";
+        return *this;
+    }
+
+    template <typename T>
+    std::enable_if_t<
+        !is_iterable<std::decay_t<T>>::value &&(
+            std::is_arithmetic_v<std::decay_t<T>>
+        ) ,
+    Log&>
+    operator<<(const T& data){
+        _logger_data._content+=std::to_string(data);
+        _logger_data._content+=" ";
         return *this;
     }
 
@@ -155,14 +185,14 @@ public:
     Log&>
     operator<<(const T& container)
     {
-        _content << "{";
+        _logger_data._content += "{";
         bool first = true;
         for (const auto& item : container) {
-            if (!first) _content << ", ";
-                _content << item;
+            if (!first) _logger_data._content += ", ";
+               *this<<item;
             first = false;
         }
-        _content << "} ";
+        _logger_data._content += "} ";
         return *this;
     }
 
@@ -173,14 +203,18 @@ public:
     std::enable_if_t<is_kv_container<T>::value, Log&>
     operator<<(const T& container)
     {
-        _content << "MAP:{";
+        _logger_data._content +="MAP:{";
         bool first = true;
         for (const auto& item : container) {
-            if (!first) _content << ", ";
-            _content << "[" << item.first << "," << item.second << "]";
+            if (!first) _logger_data._content+= ", ";
+            _logger_data._content += "[";
+            *this<<item.first;
+            _logger_data._content +=  ",";
+            *this<<item.second;
+            _logger_data._content +=  "]";
             first = false;
         }
-        _content << "} ";
+        _logger_data._content += "} ";
         return *this;
     }
 
@@ -193,40 +227,24 @@ public:
         std::ostringstream oss;
         std::unique_ptr<Json::StreamWriter> writer(writer_builder.newStreamWriter());
         writer->write(json, &oss);
-        _content << oss.str();
+        *this<<oss.str();
         return *this;
     }
 #endif
 
     ~Log() {
         if (_log_writer_func)
-            _log_writer_func(ToLogInfo());
+            _log_writer_func(_logger_data);
         else
-            std::cout << ToString(ToLogInfo()) << std::endl;
+            std::cout << ToString(_logger_data) << std::endl;
     }
 
 
-    static inline void SetLogWriterFunc(std::function<void(LogData)> func){
+    static inline void SetLogWriterFunc(std::function<void(const LogData&)> func){
         _log_writer_func = func;
     }
 
-    LogData ToLogInfo() {
-        LogData LogData;
-        LogData.type = _type;
-        LogData.file = _file;
-        LogData.line = _line;
-        LogData.function = _log_function;
-        LogData.local_time = _local_time;
-        LogData.content = _content.str();
-        return LogData;
-    }
-
 private:
-    LOG_TYPE _type;
-    std::string _file;
-    int _line;
-    std::string _log_function;
-    std::tm _local_time;
-    std::ostringstream _content;
-    static inline std::function<void(const LogData)> _log_writer_func = nullptr;
+    LogData _logger_data;
+    static inline std::function<void(const LogData&)> _log_writer_func = nullptr;
 };
