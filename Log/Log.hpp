@@ -46,6 +46,11 @@ typedef struct _LogData {
 		_line = line;
 		_function = function;
 		_local_time = std::make_shared<std::tm>();
+#ifdef _WIN32
+		_win_error = 0;
+#else
+		_errno = 0;
+#endif
 	}
 	_LogData(const _LogData& other)
 	{
@@ -61,6 +66,11 @@ typedef struct _LogData {
 	LOG_TYPE _type;
 	std::string _file;
 	int _line;
+#ifdef _WIN32
+	DWORD _win_error;
+#else
+	int _errno;
+#endif
 	std::string _function;
 	std::shared_ptr<std::tm> _local_time;
 	std::string _content;
@@ -148,25 +158,44 @@ constexpr bool is_string_like_v = std::is_convertible<T, std::string>::value;
 
 // ------------------ Log class ------------------
 //Log Helper
-static std::function<void(const LogData&)> _log_writer_func;
-static std::mutex _localtime_mutex;
+static std::function<void(const LogData&)>& log_writer_func() {
+    static std::function<void(const LogData&)> _log_writer_func;
+    return _log_writer_func;
+}
+
+static std::mutex& localtime_mutex() {
+    static std::mutex _localtime_mutex;
+    return _localtime_mutex;
+}
+
+static std::mutex& set_writer_mutex() {
+    static std::mutex _set_writer_mutex;
+    return _set_writer_mutex;
+}
+
 class Log {
 public:
 	Log(LOG_TYPE type, const std::string& file, const char* function, int line, bool showError = false)
 		:_logger_data(type, file, function, line, showError) {
 	}
 
+	static void trim_newlines(std::string& s) {
+		while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) {
+			s.pop_back();
+		}
+	}
 	static std::string SystemError(const LogData& logData)
 	{
 		std::string error;
 		if (logData._showError) {
+			error += "[";
 #ifdef __linux__
 			error += "error code: ";
-			error += std::to_string(errno);
+			error += std::to_string(logData._errno);
 			error += ", error reason: ";
-			error += strerror(errno);
+			error += strerror(logData._errno);
 #elif defined(_WIN32)
-			DWORD dwError = GetLastError();
+			DWORD dwError = logData._win_error;
 			error += "error code: ";
 			error += std::to_string(dwError);
 			error += ", error reason: ";
@@ -179,6 +208,8 @@ public:
 				lpMsgBuf = NULL;
 			}
 #endif
+			trim_newlines(error);
+			error += "]";
 		}
 		return error;
 	}
@@ -204,6 +235,13 @@ public:
 		is_string_like_v<std::decay_t<T>>,
 		Log&>
 		operator<<(const T& data) {
+#ifdef _WIN32
+		if (_logger_data._win_error == 0)
+			_logger_data._win_error = GetLastError();
+#else
+		if (_logger_data._errno == 0)
+			_logger_data._errno = errno;
+#endif
 		_logger_data._content += data;
 		_logger_data._content += " ";
 		return *this;
@@ -214,6 +252,13 @@ public:
 		std::is_arithmetic<std::decay_t<T>>::value,
 		Log&>
 		operator<<(const T& data) {
+#ifdef _WIN32
+		if (_logger_data._win_error == 0)
+			_logger_data._win_error = GetLastError();
+#else
+		if (_logger_data._errno == 0)
+			_logger_data._errno = errno;
+#endif
 		_logger_data._content += std::to_string(data);
 		_logger_data._content += " ";
 		return *this;
@@ -221,9 +266,17 @@ public:
 
 	template <typename T>
 	std::enable_if_t<
-		std::is_pointer<T>::value,
+		std::is_pointer<T>::value &&
+        !is_string_like_v<std::decay_t<T>>,
 		Log&>
 		operator<<(const T& data) {
+#ifdef _WIN32
+		if (_logger_data._win_error == 0)
+			_logger_data._win_error = GetLastError();
+#else
+		if (_logger_data._errno == 0)
+			_logger_data._errno = errno;
+#endif           
 		_logger_data._content += "address(";
 		_logger_data._content += std::to_string((uintptr_t)data);
 		_logger_data._content += ") ";
@@ -297,19 +350,25 @@ public:
 		auto now_c = std::chrono::system_clock::to_time_t(now);
 		// 转换为本地时间
 		{
-			std::lock_guard<std::mutex> lock(_localtime_mutex);
+			std::lock_guard<std::mutex> lock(localtime_mutex());
 			std::tm* local_time = std::localtime(&now_c);
 			std::memcpy(_logger_data._local_time.get(), local_time, sizeof(std::tm));
 		}
-		if (_log_writer_func)
-			_log_writer_func(_logger_data);
+		std::function<void(const LogData&)> writer;
+		{
+			std::lock_guard<std::mutex> lock(set_writer_mutex());
+			writer = log_writer_func();   // 受保护的拷贝
+		}
+		if (writer)
+			writer(_logger_data);
 		else
 			std::cout << ToString(_logger_data) << std::endl;
 	}
 
 
 	static inline void SetLogWriterFunc(std::function<void(const LogData&)> func) {
-		_log_writer_func = func;
+		std::lock_guard<std::mutex> lock(set_writer_mutex());
+		log_writer_func() = func;
 	}
 
 private:
