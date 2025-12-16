@@ -1,5 +1,5 @@
-#pragma once
-
+#ifndef __Log_hpp_
+#define __Log_hpp_
 #include <map>
 #include <list>
 #include <mutex>
@@ -19,6 +19,10 @@
 #include <utility>
 #include <cstring>
 #ifdef _WIN32
+#if defined(_USE_WINSOCK2API_)
+#define WIN32_LEAN_AND_MEAN
+#include <WinSock2.h>
+#endif
 #include<Windows.h>
 #undef ERROR
 #endif // _WIN32
@@ -37,8 +41,27 @@ enum class LOG_TYPE {
 	DEBUG,
 };
 
+enum class ErrorSource {
+	Win32,
+	Winsock
+};
+
+#ifdef _WIN32
+#if defined(_USE_WINSOCK2API_)
+#pragma comment(lib,"ws2_32.lib")
+#endif
+static DWORD GetUnifiedError(ErrorSource source) {
+#if defined(_USE_WINSOCK2API_)
+	if (source == ErrorSource::Winsock) {
+		return WSAGetLastError();
+	}
+#endif
+	return GetLastError();
+}
+#endif
+
 typedef struct _LogData {
-	_LogData(LOG_TYPE type, const std::string& file, const char* function, int line, bool showError)
+	_LogData(LOG_TYPE type, const std::string& file, const char* function, int line, bool showError, ErrorSource error_source)
 	{
 		_showError = showError;
 		_type = type;
@@ -48,7 +71,9 @@ typedef struct _LogData {
 		_local_time = std::make_shared<std::tm>();
 #ifdef _WIN32
 		_win_error = 0;
+		_error_source = error_source;
 #else
+		(void)error_source;
 		_errno = 0;
 #endif
 	}
@@ -68,6 +93,7 @@ typedef struct _LogData {
 	int _line;
 #ifdef _WIN32
 	DWORD _win_error;
+	ErrorSource _error_source;
 #else
 	int _errno;
 #endif
@@ -76,39 +102,72 @@ typedef struct _LogData {
 	std::string _content;
 }LogData;
 
+static constexpr const char* get_filename(const char* path) {
+	const char* file = path;
+	while (*path) {
+		if (*path == '/' || *path == '\\') {
+			file = path + 1;
+		}
+		path++;
+	}
+	return file;
+}
 
+#ifndef __FILENAME__
+#define __FILENAME__ (get_filename(__FILE__))
+#endif
 
 #ifndef LOGI
-#define LOGI() Log(LOG_TYPE::INFO, __FILE__, __func__, __LINE__)
+#define LOGI() Log(LOG_TYPE::INFO, __FILENAME__, __func__, __LINE__)
 #endif
 
 #ifndef LOGE
-#define LOGE() Log(LOG_TYPE::ERROR, __FILE__, __func__, __LINE__)
+#define LOGE() Log(LOG_TYPE::ERROR, __FILENAME__, __func__, __LINE__)
 #endif
 
 #ifndef LOGW
-#define LOGW() Log(LOG_TYPE::WARN, __FILE__, __func__, __LINE__)
+#define LOGW() Log(LOG_TYPE::WARN, __FILENAME__, __func__, __LINE__)
 #endif
 
 #ifndef LOGD
-#define LOGD() Log(LOG_TYPE::DEBUG, __FILE__, __func__, __LINE__)
+#define LOGD() Log(LOG_TYPE::DEBUG, __FILENAME__, __func__, __LINE__)
 #endif
 
 
 #ifndef LOG_PERRORI
-#define LOG_PERRORI() Log(LOG_TYPE::INFO, __FILE__, __func__, __LINE__,true)
+#define LOG_PERRORI() Log(LOG_TYPE::INFO, __FILENAME__, __func__, __LINE__,true)
 #endif
 
 #ifndef LOG_PERRORE
-#define LOG_PERRORE() Log(LOG_TYPE::ERROR, __FILE__, __func__, __LINE__,true)
+#define LOG_PERRORE() Log(LOG_TYPE::ERROR, __FILENAME__, __func__, __LINE__,true)
 #endif
 
 #ifndef LOG_PERRORW
-#define LOG_PERRORW() Log(LOG_TYPE::WARN, __FILE__, __func__, __LINE__,true)
+#define LOG_PERRORW() Log(LOG_TYPE::WARN, __FILENAME__, __func__, __LINE__,true)
 #endif
 
 #ifndef LOG_PERRORD
-#define LOG_PERRORD() Log(LOG_TYPE::DEBUG, __FILE__, __func__, __LINE__,true)
+#define LOG_PERRORD() Log(LOG_TYPE::DEBUG, __FILENAME__, __func__, __LINE__,true)
+#endif
+
+#ifdef _WIN32
+#if defined(_USE_WINSOCK2API_)
+#ifndef LOG_WINSOCKPERRORI
+#define LOG_WINSOCKPERRORI() Log(LOG_TYPE::INFO, __FILENAME__, __func__, __LINE__,true,ErrorSource::Winsock)
+#endif
+
+#ifndef LOG_WINSOCKPERRORE
+#define LOG_WINSOCKPERRORE() Log(LOG_TYPE::ERROR, __FILENAME__, __func__, __LINE__,true,ErrorSource::Winsock)
+#endif
+
+#ifndef LOG_WINSOCKPERRORW
+#define LOG_WINSOCKPERRORW() Log(LOG_TYPE::WARN, __FILENAME__, __func__, __LINE__,true,ErrorSource::Winsock)
+#endif
+
+#ifndef LOG_WINSOCKPERRORD
+#define LOG_WINSOCKPERRORD() Log(LOG_TYPE::DEBUG, __FILENAME__, __func__, __LINE__,true,ErrorSource::Winsock)
+#endif
+#endif
 #endif
 
 
@@ -159,24 +218,24 @@ constexpr bool is_string_like_v = std::is_convertible<T, std::string>::value;
 // ------------------ Log class ------------------
 //Log Helper
 static std::function<void(const LogData&)>& log_writer_func() {
-    static std::function<void(const LogData&)> _log_writer_func;
-    return _log_writer_func;
+	static std::function<void(const LogData&)> _log_writer_func;
+	return _log_writer_func;
 }
 
 static std::mutex& localtime_mutex() {
-    static std::mutex _localtime_mutex;
-    return _localtime_mutex;
+	static std::mutex _localtime_mutex;
+	return _localtime_mutex;
 }
 
 static std::mutex& set_writer_mutex() {
-    static std::mutex _set_writer_mutex;
-    return _set_writer_mutex;
+	static std::mutex _set_writer_mutex;
+	return _set_writer_mutex;
 }
 
 class Log {
 public:
-	Log(LOG_TYPE type, const std::string& file, const char* function, int line, bool showError = false)
-		:_logger_data(type, file, function, line, showError) {
+	Log(LOG_TYPE type, const std::string& file, const char* function, int line, bool showError = false, ErrorSource error_source = ErrorSource::Win32)
+		:_logger_data(type, file, function, line, showError,error_source) {
 	}
 
 	static void trim_newlines(std::string& s) {
@@ -237,7 +296,7 @@ public:
 		operator<<(const T& data) {
 #ifdef _WIN32
 		if (_logger_data._win_error == 0)
-			_logger_data._win_error = GetLastError();
+			_logger_data._win_error = GetUnifiedError(_logger_data._error_source);
 #else
 		if (_logger_data._errno == 0)
 			_logger_data._errno = errno;
@@ -254,7 +313,7 @@ public:
 		operator<<(const T& data) {
 #ifdef _WIN32
 		if (_logger_data._win_error == 0)
-			_logger_data._win_error = GetLastError();
+			_logger_data._win_error = GetUnifiedError(_logger_data._error_source);
 #else
 		if (_logger_data._errno == 0)
 			_logger_data._errno = errno;
@@ -267,12 +326,12 @@ public:
 	template <typename T>
 	std::enable_if_t<
 		std::is_pointer<T>::value &&
-        !is_string_like_v<std::decay_t<T>>,
+		!is_string_like_v<std::decay_t<T>>,
 		Log&>
 		operator<<(const T& data) {
 #ifdef _WIN32
 		if (_logger_data._win_error == 0)
-			_logger_data._win_error = GetLastError();
+			_logger_data._win_error = GetUnifiedError(_logger_data._error_source);
 #else
 		if (_logger_data._errno == 0)
 			_logger_data._errno = errno;
@@ -375,3 +434,4 @@ private:
 	LogData _logger_data;
 };
 
+#endif
