@@ -232,15 +232,10 @@ static std::mutex& set_writer_mutex() {
 	return _set_writer_mutex;
 }
 
-static std::mutex& print_pretty_mutex() {
-	static std::mutex _print_pretty_mutex;
-	return _print_pretty_mutex;
-}
-
 class Log {
 public:
 	Log(LOG_TYPE type, const std::string& file, const char* function, int line, bool showError = false, ErrorSource error_source = ErrorSource::Win32)
-		:_logger_data(type, file, function, line, showError, error_source) {
+		:_logger_data(type, file, function, line, showError,error_source) {
 	}
 
 	static void trim_newlines(std::string& s) {
@@ -423,14 +418,10 @@ public:
 			std::lock_guard<std::mutex> lock(set_writer_mutex());
 			writer = log_writer_func();   // 受保护的拷贝
 		}
-		{
-			std::lock_guard<std::mutex> lock(print_pretty_mutex());
-			if (writer)
-				writer(_logger_data);
-			else
-				std::cout << ToString(_logger_data) << std::endl;
-		}
-		
+		if (writer)
+			writer(_logger_data);
+		else
+			std::cout << ToString(_logger_data) << std::endl;
 	}
 
 
